@@ -1,0 +1,3 @@
+fastmcp
+fal-client
+httpx
