@@ -90,6 +90,13 @@ MODEL_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "image_edit": {
+        "nano-banana-2-edit": {
+            "id": "fal-ai/nano-banana-2/edit",
+            "name": "Nano Banana 2 Edit",
+            "description": "Gemini 3.1 Flash — fast image editing, text rendering, character consistency",
+            "defaults": {"resolution": "1k"},
+            "price": "~$0.08/edit",
+        },
         "nano-banana-pro-edit": {
             "id": "fal-ai/nano-banana-pro/edit",
             "name": "Nano Banana Pro Edit",
@@ -441,7 +448,7 @@ async def edit_image(
     Args:
         image_url: URL of the source image to edit
         prompt: Description of the desired edit or transformation
-        model: Model short name or full fal.ai ID. Options: flux-kontext (default), nano-banana-pro-edit (Gemini 3 Pro), gpt-image-edit (GPT-Image 1.5), seedream-v4-edit (ByteDance, cheap)
+        model: Model short name or full fal.ai ID. Options: flux-kontext (default), nano-banana-2-edit (Gemini 3.1 Flash, fast), nano-banana-pro-edit (Gemini 3 Pro), gpt-image-edit (GPT-Image 1.5), seedream-v4-edit (ByteDance, cheap)
         strength: How much to change the image (0.0-1.0, model-dependent)
         seed: Random seed for reproducibility
     """
@@ -453,7 +460,7 @@ async def edit_image(
 
     if "kontext" in model_id:
         args["image_url"] = image_url
-    elif "nano-banana-pro" in model_id:
+    elif "nano-banana" in model_id:
         args["image_urls"] = [image_url]
     elif "gpt-image" in model_id:
         args["image_url"] = image_url

@@ -21,10 +21,11 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp). Works with Claude Code 
 | `gpt-image` | GPT-Image 1.5 | OpenAI — high-fidelity, strong prompt adherence | ~$0.13/image |
 | `seedream-v4` | Seedream V4 | ByteDance — up to 4K resolution | ~$0.03/image |
 
-### Image Editing (3 models)
+### Image Editing (4 models)
 
 | Short Name | Model | Description | Price |
 |---|---|---|---|
+| `nano-banana-2-edit` | Nano Banana 2 Edit | Gemini 3.1 Flash — fast editing, text rendering | ~$0.08/edit |
 | `nano-banana-pro-edit` | Nano Banana Pro Edit | Gemini 3 Pro — semantic editing, 14 ref images | ~$0.15/edit |
 | `gpt-image-edit` | GPT-Image 1.5 Edit | OpenAI — preserves composition and lighting | ~$0.13/edit |
 | `seedream-v4-edit` | Seedream V4 Edit | ByteDance — context-aware editing | ~$0.03/edit |
