@@ -1,6 +1,8 @@
 """fal.ai MCP Server — generative AI models for Claude Code."""
 
+import base64
 import json
+import mimetypes
 import os
 import hashlib
 import tempfile
@@ -941,6 +943,31 @@ async def list_jobs(status_filter: str = "", limit: int = 20) -> dict:
         items = items[:limit]
 
     return {"count": len(items), "jobs": items, "store": str(JOBS_FILE)}
+
+
+@mcp.tool()
+async def read_file_base64(path: str) -> dict:
+    """Read a local file and return it as a data: URL plus base64.
+
+    Useful for artifact UIs that can't load file:// or external HTTPS images
+    directly due to CSP — call this on a fetch_job's local_path and inline
+    the data_url as <img src="...">.
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"Not a file: {path}")
+    mime, _ = mimetypes.guess_type(str(p))
+    if not mime:
+        mime = "application/octet-stream"
+    data = p.read_bytes()
+    b64 = base64.b64encode(data).decode("ascii")
+    return {
+        "path": str(p),
+        "mime_type": mime,
+        "size": len(data),
+        "base64": b64,
+        "data_url": f"data:{mime};base64,{b64}",
+    }
 
 
 # ---------------------------------------------------------------------------

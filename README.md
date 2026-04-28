@@ -93,6 +93,12 @@ The synchronous tools block while the model runs. For models that take longer th
 | `cancel_job(request_id)` | Cancel a queued or in-progress job |
 | `list_jobs(status_filter?, limit?)` | List locally tracked jobs (most recent first) |
 
+### Utilities
+
+| Tool | Description |
+|---|---|
+| `read_file_base64(path)` | Read a local file and return `{mime_type, size, data_url, base64}`. Useful for inlining downloaded images into artifact UIs that can't load `file://` due to CSP. |
+
 Job metadata (`request_id → model_id, media_type, prefix, status, files`) is persisted in `jobs.json` next to `server.py`, so `poll_job` and `fetch_job` only need the `request_id`.
 
 **Example flow:**
