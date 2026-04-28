@@ -1,8 +1,10 @@
 """fal.ai MCP Server — generative AI models for Claude Code."""
 
+import json
 import os
 import hashlib
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,13 @@ MODEL_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "defaults": {"image_size": "1024x1024", "quality": "high"},
             "price": "~$0.13/image (high quality)",
         },
+        "gpt-image-2": {
+            "id": "openai/gpt-image-2",
+            "name": "GPT Image 2",
+            "description": "OpenAI — latest text-to-image with extremely detailed images and fine typography. Both dims must be multiples of 16, max edge 3840px.",
+            "defaults": {"image_size": "landscape_4_3", "quality": "high", "output_format": "png"},
+            "price": "token-based; ~$0.10-0.30/image at high quality (1024x1024)",
+        },
         "seedream-v4": {
             "id": "fal-ai/bytedance/seedream/v4",
             "name": "Seedream V4",
@@ -110,6 +119,13 @@ MODEL_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "OpenAI — image editing with high fidelity, preserves composition and lighting",
             "defaults": {"quality": "high", "input_fidelity": "high"},
             "price": "~$0.13/edit (high quality)",
+        },
+        "gpt-image-2-edit": {
+            "id": "openai/gpt-image-2/edit",
+            "name": "GPT Image 2 Edit",
+            "description": "OpenAI — latest image editing model with high fidelity and fine typography. Supports optional mask_url.",
+            "defaults": {"image_size": "auto", "quality": "high", "output_format": "png"},
+            "price": "token-based; ~$0.10-0.30/edit at high quality",
         },
         "seedream-v4-edit": {
             "id": "fal-ai/bytedance/seedream/v4/edit",
@@ -383,6 +399,70 @@ def _format_error(e: Exception) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Job persistence (queue API)
+# ---------------------------------------------------------------------------
+
+JOBS_FILE = Path(__file__).resolve().parent / "jobs.json"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_jobs() -> dict[str, dict[str, Any]]:
+    if not JOBS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(JOBS_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_jobs(jobs: dict[str, dict[str, Any]]) -> None:
+    JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".jobs.", suffix=".json", dir=str(JOBS_FILE.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(jobs, f, indent=2)
+        os.replace(tmp, JOBS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _record_job(request_id: str, **fields: Any) -> None:
+    jobs = _load_jobs()
+    existing = jobs.get(request_id, {})
+    existing.update(fields)
+    jobs[request_id] = existing
+    _save_jobs(jobs)
+
+
+def _get_job(request_id: str) -> dict[str, Any] | None:
+    return _load_jobs().get(request_id)
+
+
+def _summarize_status(status: Any) -> dict[str, Any]:
+    """Convert a fal_client Status object into a JSON-friendly dict."""
+    if isinstance(status, fal_client.Queued):
+        return {"status": "IN_QUEUE", "queue_position": status.position}
+    if isinstance(status, fal_client.InProgress):
+        return {"status": "IN_PROGRESS", "logs": list(status.logs or [])}
+    if isinstance(status, fal_client.Completed):
+        out: dict[str, Any] = {"status": "COMPLETED"}
+        if getattr(status, "logs", None):
+            out["logs"] = list(status.logs)
+        if getattr(status, "metrics", None):
+            out["metrics"] = status.metrics
+        return out
+    return {"status": str(type(status).__name__).upper()}
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -401,9 +481,9 @@ async def generate_image(
 
     Args:
         prompt: Text description of the image to generate
-        model: Model short name or full fal.ai ID. Options: flux-dev (balanced), flux-schnell (fast), flux-pro (best quality), recraft-v4 (design/typography), nano-banana (ultra-fast/cheap), nano-banana-2 (Gemini 3.1 Flash), nano-banana-pro (Gemini 3 Pro, best), gpt-image (GPT-Image 1.5), seedream-v4 (ByteDance, cheap)
-        width: Image width in pixels (default 1024). Ignored by nano-banana-2/pro and gpt-image (use resolution/aspect_ratio).
-        height: Image height in pixels (default 1024). Ignored by nano-banana-2/pro and gpt-image.
+        model: Model short name or full fal.ai ID. Options: flux-dev (balanced), flux-schnell (fast), flux-pro (best quality), recraft-v4 (design/typography), nano-banana (ultra-fast/cheap), nano-banana-2 (Gemini 3.1 Flash), nano-banana-pro (Gemini 3 Pro, best), gpt-image (GPT-Image 1.5), gpt-image-2 (latest, fine typography), seedream-v4 (ByteDance, cheap)
+        width: Image width in pixels (default 1024). Ignored by nano-banana-2/pro (use resolution/aspect_ratio).
+        height: Image height in pixels (default 1024). Ignored by nano-banana-2/pro.
         num_images: Number of images to generate (default 1)
         guidance_scale: How closely to follow the prompt (model-dependent)
         seed: Random seed for reproducibility
@@ -414,7 +494,12 @@ async def generate_image(
     # Models that use resolution/aspect_ratio instead of width/height
     if "nano-banana-2" in model_id or "nano-banana-pro" in model_id:
         args["num_images"] = num_images
-    elif "gpt-image" in model_id:
+    elif model_id == "openai/gpt-image-2":
+        args["image_size"] = {"width": width, "height": height}
+        args["num_images"] = num_images
+        args["quality"] = "high"
+        args["output_format"] = "png"
+    elif "gpt-image-1.5" in model_id:
         args["image_size"] = f"{width}x{height}"
         args["num_images"] = num_images
         args["quality"] = "high"
@@ -448,7 +533,7 @@ async def edit_image(
     Args:
         image_url: URL of the source image to edit
         prompt: Description of the desired edit or transformation
-        model: Model short name or full fal.ai ID. Options: flux-kontext (default), nano-banana-2-edit (Gemini 3.1 Flash, fast), nano-banana-pro-edit (Gemini 3 Pro), gpt-image-edit (GPT-Image 1.5), seedream-v4-edit (ByteDance, cheap)
+        model: Model short name or full fal.ai ID. Options: flux-kontext (default), nano-banana-2-edit (Gemini 3.1 Flash, fast), nano-banana-pro-edit (Gemini 3 Pro), gpt-image-edit (GPT-Image 1.5), gpt-image-2-edit (latest), seedream-v4-edit (ByteDance, cheap)
         strength: How much to change the image (0.0-1.0, model-dependent)
         seed: Random seed for reproducibility
     """
@@ -462,7 +547,11 @@ async def edit_image(
         args["image_url"] = image_url
     elif "nano-banana" in model_id:
         args["image_urls"] = [image_url]
-    elif "gpt-image" in model_id:
+    elif model_id == "openai/gpt-image-2/edit":
+        args["image_urls"] = [image_url]
+        args["quality"] = "high"
+        args["output_format"] = "png"
+    elif "gpt-image-1.5" in model_id:
         args["image_url"] = image_url
         args["quality"] = "high"
     elif "seedream" in model_id:
@@ -675,6 +764,183 @@ async def list_models(category: str = "") -> dict:
             })
 
     return {"models": result, "tip": "Use short_name or full id in model parameters. Use run_model for any fal.ai model not listed here."}
+
+
+# ---------------------------------------------------------------------------
+# Queue API tools (submit / poll / fetch / cancel / list)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def submit_job(
+    model: str,
+    arguments: dict,
+    media_type: str = "other",
+    prefix: str = "output",
+    webhook_url: str | None = None,
+) -> dict:
+    """Submit a long-running fal.ai job and return immediately with a request_id.
+
+    Use this for slow models (video, 3D, large image batches) that may exceed
+    the MCP tool-call timeout (~60s). Then call poll_job to check status and
+    fetch_job to download results when COMPLETED.
+
+    The request_id and metadata are persisted locally so poll_job/fetch_job
+    don't need the model_id again.
+
+    Args:
+        model: Model short name or full fal.ai ID (e.g. "kling-v3-pro" or "fal-ai/kling-video/v3/master/text-to-video")
+        arguments: Dict of arguments to pass to the model. Use list_models for hints.
+        media_type: Output type for download organization: "image", "video", "audio", "3d", "other"
+        prefix: Filename prefix used when fetch_job downloads the result
+        webhook_url: Optional fal webhook URL — fal POSTs the result there on completion (off by default)
+    """
+    resolved_id = _resolve_model(model)
+    try:
+        kwargs: dict[str, Any] = {}
+        if webhook_url:
+            kwargs["webhook_url"] = webhook_url
+        handle = await fal_client.submit_async(resolved_id, arguments=arguments, **kwargs)
+    except Exception as e:
+        return {"error": _format_error(e)}
+
+    request_id = handle.request_id
+    _record_job(
+        request_id,
+        model_id=resolved_id,
+        media_type=media_type,
+        prefix=prefix,
+        submitted_at=_now_iso(),
+        status="SUBMITTED",
+        arguments_keys=sorted(arguments.keys()) if isinstance(arguments, dict) else [],
+    )
+    return {
+        "request_id": request_id,
+        "model": resolved_id,
+        "status": "SUBMITTED",
+        "next": "Call poll_job(request_id) to check status, then fetch_job(request_id) once COMPLETED.",
+    }
+
+
+@mcp.tool()
+async def poll_job(request_id: str, with_logs: bool = False) -> dict:
+    """Check the status of a submitted fal.ai job.
+
+    Returns one of: IN_QUEUE (with queue_position), IN_PROGRESS (with logs if
+    with_logs=True), or COMPLETED. Use fetch_job once COMPLETED.
+
+    Args:
+        request_id: The request_id returned by submit_job
+        with_logs: Include progress logs in the response (default False — saves bytes)
+    """
+    job = _get_job(request_id)
+    if not job:
+        return {"error": f"No job found for request_id={request_id}. Use list_jobs to see known jobs."}
+
+    model_id = job.get("model_id")
+    if not model_id:
+        return {"error": f"Job {request_id} has no model_id stored — cannot poll."}
+
+    try:
+        status = await fal_client.status_async(model_id, request_id, with_logs=with_logs)
+    except Exception as e:
+        return {"error": _format_error(e), "request_id": request_id}
+
+    summary = _summarize_status(status)
+    new_status = summary.get("status", "UNKNOWN")
+    if job.get("status") != new_status:
+        _record_job(request_id, status=new_status, last_polled_at=_now_iso())
+    else:
+        _record_job(request_id, last_polled_at=_now_iso())
+
+    return {"request_id": request_id, "model": model_id, **summary}
+
+
+@mcp.tool()
+async def fetch_job(request_id: str) -> dict:
+    """Fetch the result of a COMPLETED fal.ai job and download output files locally.
+
+    Will fail if the job is still IN_QUEUE / IN_PROGRESS — call poll_job first.
+    Safe to call multiple times; result is cached in jobs.json after first fetch.
+
+    Args:
+        request_id: The request_id returned by submit_job
+    """
+    job = _get_job(request_id)
+    if not job:
+        return {"error": f"No job found for request_id={request_id}. Use list_jobs to see known jobs."}
+
+    model_id = job.get("model_id")
+    if not model_id:
+        return {"error": f"Job {request_id} has no model_id stored — cannot fetch."}
+
+    try:
+        result = await fal_client.result_async(model_id, request_id)
+    except Exception as e:
+        return {"error": _format_error(e), "request_id": request_id}
+
+    if not isinstance(result, dict):
+        result = {"output": result}
+
+    media_type = job.get("media_type", "other")
+    prefix = job.get("prefix", "output")
+    files = await _download_result_files(result, media_type, prefix)
+
+    _record_job(
+        request_id,
+        status="FETCHED",
+        fetched_at=_now_iso(),
+        files=files,
+    )
+    return {"request_id": request_id, "model": model_id, "files": files, "raw_result": result}
+
+
+@mcp.tool()
+async def cancel_job(request_id: str) -> dict:
+    """Cancel a queued or in-progress fal.ai job.
+
+    Returns an error if the job has already completed.
+
+    Args:
+        request_id: The request_id returned by submit_job
+    """
+    job = _get_job(request_id)
+    if not job:
+        return {"error": f"No job found for request_id={request_id}."}
+
+    model_id = job.get("model_id")
+    if not model_id:
+        return {"error": f"Job {request_id} has no model_id stored — cannot cancel."}
+
+    try:
+        await fal_client.cancel_async(model_id, request_id)
+    except Exception as e:
+        return {"error": _format_error(e), "request_id": request_id}
+
+    _record_job(request_id, status="CANCELLED", cancelled_at=_now_iso())
+    return {"request_id": request_id, "status": "CANCELLED"}
+
+
+@mcp.tool()
+async def list_jobs(status_filter: str = "", limit: int = 20) -> dict:
+    """List locally tracked fal.ai jobs (most recent first).
+
+    Args:
+        status_filter: Optional filter — "SUBMITTED", "IN_QUEUE", "IN_PROGRESS", "COMPLETED", "FETCHED", "CANCELLED"
+        limit: Maximum number of jobs to return (default 20)
+    """
+    jobs = _load_jobs()
+    items = []
+    for rid, info in jobs.items():
+        if status_filter and info.get("status") != status_filter.upper():
+            continue
+        items.append({"request_id": rid, **info})
+
+    items.sort(key=lambda x: x.get("submitted_at", ""), reverse=True)
+    if limit > 0:
+        items = items[:limit]
+
+    return {"count": len(items), "jobs": items, "store": str(JOBS_FILE)}
 
 
 # ---------------------------------------------------------------------------

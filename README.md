@@ -19,6 +19,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp). Works with Claude Code 
 | `nano-banana-2` | Nano Banana 2 | Gemini 3.1 Flash — text rendering, consistency | ~$0.08/image |
 | `nano-banana-pro` | Nano Banana Pro | Gemini 3 Pro — state-of-the-art | ~$0.15/image |
 | `gpt-image` | GPT-Image 1.5 | OpenAI — high-fidelity, strong prompt adherence | ~$0.13/image |
+| `gpt-image-2` | GPT Image 2 | OpenAI — latest model, fine typography, detailed images | token-based, ~$0.10–0.30 |
 | `seedream-v4` | Seedream V4 | ByteDance — up to 4K resolution | ~$0.03/image |
 
 ### Image Editing (4 models)
@@ -28,6 +29,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp). Works with Claude Code 
 | `nano-banana-2-edit` | Nano Banana 2 Edit | Gemini 3.1 Flash — fast editing, text rendering | ~$0.08/edit |
 | `nano-banana-pro-edit` | Nano Banana Pro Edit | Gemini 3 Pro — semantic editing, 14 ref images | ~$0.15/edit |
 | `gpt-image-edit` | GPT-Image 1.5 Edit | OpenAI — preserves composition and lighting | ~$0.13/edit |
+| `gpt-image-2-edit` | GPT Image 2 Edit | OpenAI — latest model, supports `mask_url` | token-based, ~$0.10–0.30 |
 | `seedream-v4-edit` | Seedream V4 Edit | ByteDance — context-aware editing | ~$0.03/edit |
 
 ### Video Generation (5 models)
@@ -65,6 +67,8 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp). Works with Claude Code 
 
 ## Available Tools
 
+### Synchronous (block until result, best for fast models)
+
 | Tool | Description |
 |---|---|
 | `generate_image` | Generate images from text prompts |
@@ -76,6 +80,30 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp). Works with Claude Code 
 | `upscale_image` | Upscale images to higher resolution |
 | `run_model` | Run any fal.ai model with custom arguments |
 | `list_models` | List all available models from the catalog |
+
+### Asynchronous queue API (for long-running jobs — video, 3D, large batches)
+
+The synchronous tools block while the model runs. For models that take longer than the MCP tool-call timeout (~60 s), use the queue API instead: submit returns immediately with a `request_id`, then poll and fetch separately.
+
+| Tool | Description |
+|---|---|
+| `submit_job(model, arguments, media_type, prefix, webhook_url?)` | Submit a job, return `request_id` immediately |
+| `poll_job(request_id, with_logs?)` | Check status: `IN_QUEUE` (with `queue_position`), `IN_PROGRESS` (with logs), or `COMPLETED` |
+| `fetch_job(request_id)` | Once `COMPLETED`, fetch result and download files locally |
+| `cancel_job(request_id)` | Cancel a queued or in-progress job |
+| `list_jobs(status_filter?, limit?)` | List locally tracked jobs (most recent first) |
+
+Job metadata (`request_id → model_id, media_type, prefix, status, files`) is persisted in `jobs.json` next to `server.py`, so `poll_job` and `fetch_job` only need the `request_id`.
+
+**Example flow:**
+
+```
+submit_job(model="kling-v3-pro", arguments={"prompt":"a fox jumping","duration":"5"}, media_type="video", prefix="fox")
+  → {"request_id": "019dd...", "status": "SUBMITTED"}
+poll_job("019dd...")           → {"status": "IN_PROGRESS", ...}
+poll_job("019dd...")           → {"status": "COMPLETED"}
+fetch_job("019dd...")          → {"files": [{"local_path": "~/Downloads/fal-ai/videos/fox_..."}]}
+```
 
 ## Installation
 
