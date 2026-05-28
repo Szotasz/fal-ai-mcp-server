@@ -717,6 +717,93 @@ async def upscale_image(image_url: str, scale: int = 4) -> dict:
 
 
 @mcp.tool()
+async def upload_file(file_path: str) -> dict:
+    """Upload a local file to fal.ai CDN for use as input in generation/edit calls.
+
+    Returns a CDN URL that works with edit_image, generate_video, generate_3d,
+    remove_background, upscale_image, or any tool that accepts image_url.
+
+    Supported formats: PNG, JPEG, WebP, GIF, BMP, TIFF, MP4, WebM, WAV, MP3, OGG, FLAC.
+    Max file size: 100 MB.
+
+    Args:
+        file_path: Absolute path to the local file to upload
+    """
+    p = Path(file_path).expanduser().resolve()
+    if not p.is_file():
+        return {"error": f"File not found: {file_path}"}
+
+    mime, _ = mimetypes.guess_type(str(p))
+    if not mime:
+        mime = "application/octet-stream"
+
+    allowed = {
+        "image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff",
+        "video/mp4", "video/webm", "video/quicktime",
+        "audio/wav", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/flac",
+    }
+    if mime not in allowed:
+        return {"error": f"Unsupported file type: {mime}. Supported: {', '.join(sorted(allowed))}"}
+
+    file_size = p.stat().st_size
+    max_size = 100 * 1024 * 1024
+    if file_size > max_size:
+        return {"error": f"File too large: {file_size / 1024 / 1024:.1f} MB (max 100 MB)"}
+
+    try:
+        url = await fal_client.upload_file_async(str(p))
+        return {
+            "url": url,
+            "file_path": str(p),
+            "file_name": p.name,
+            "mime_type": mime,
+            "size_bytes": file_size,
+        }
+    except Exception as e:
+        return {"error": _format_error(e)}
+
+
+@mcp.tool()
+async def upload_from_url(url: str) -> dict:
+    """Download a file from a URL and re-upload it to fal.ai CDN.
+
+    Useful when the source URL is temporary, behind auth, or on a domain that
+    fal.ai cannot access directly. The returned CDN URL works with all fal.ai tools.
+
+    Args:
+        url: Source URL to download from
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.content
+    except Exception as e:
+        return {"error": f"Failed to download: {e}"}
+
+    content_type = resp.headers.get("content-type", "")
+    mime = content_type.split(";")[0].strip() if content_type else None
+    if not mime:
+        from urllib.parse import urlparse
+        path_ext = Path(urlparse(url).path).suffix
+        if path_ext:
+            mime, _ = mimetypes.guess_type(f"file{path_ext}")
+    if not mime:
+        mime = "application/octet-stream"
+
+    try:
+        cdn_url = await fal_client.upload_async(data, mime)
+        return {
+            "url": cdn_url,
+            "source_url": url,
+            "mime_type": mime,
+            "size_bytes": len(data),
+        }
+    except Exception as e:
+        return {"error": _format_error(e)}
+
+
+@mcp.tool()
 async def run_model(
     model_id: str,
     arguments: dict,
